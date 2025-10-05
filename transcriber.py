@@ -9,6 +9,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 
@@ -84,13 +85,17 @@ class GeminiTranscriber(Transcriber):
             except Exception as e:
                 print(f"⚠️ Token counting failed: {e}")
 
-        # Generate transcription
         response = self.client.models.generate_content(
             model=self.model,
             contents=[
                 "Transcribe this audio exactly as spoken. Only return the transcription, nothing else.",
                 audio_file
-            ]
+            ],
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=0
+                )
+            )
         )
 
         transcription_time = time.time() - start_time
