@@ -13,11 +13,13 @@ A macOS menu bar app for voice-to-text transcription using Gemini AI.
 ## Setup
 
 1. **Install dependencies:**
+
    ```bash
    pip install -r requirements.txt
    ```
 
 2. **Configure API key:**
+
    ```bash
    cp .env.example .env
    # Edit .env and add your GOOGLE_API_KEY
@@ -31,11 +33,13 @@ A macOS menu bar app for voice-to-text transcription using Gemini AI.
 ## Usage
 
 1. **Start the app:**
+
    ```bash
    python app.py
    ```
 
 2. **Record audio:**
+
    - Click the 🎤 icon in your menu bar
    - Select "Start Recording"
    - Speak into your microphone
@@ -68,4 +72,3 @@ On first run, macOS will ask for microphone permissions. Click **Allow**.
 - [ ] Keyboard shortcut for global access
 - [ ] Auto-paste to active window
 - [ ] Transcription history
-# otis-the-scribe
