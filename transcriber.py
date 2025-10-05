@@ -60,7 +60,7 @@ class GeminiTranscriber(Transcriber):
 
         # Generate transcription
         response = self.client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.5-flash-lite",
             contents=[
                 "Transcribe this audio exactly as spoken. Only return the transcription, nothing else.",
                 audio_file

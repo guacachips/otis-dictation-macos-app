@@ -75,14 +75,14 @@ class OtisTheScribeApp(rumps.App):
                 self.current_text = self.transcriber.transcribe(audio_file)
                 print(f"✅ Transcription complete: {self.current_text}")
 
-                # Auto-show the window on main thread
-                rumps.Timer(lambda _: self.show_text_window(None), 0.1).start()
+                # Send notification using osascript (no setup required!)
+                preview = self.current_text[:100] + "..." if len(self.current_text) > 100 else self.current_text
+                self._send_notification("Transcription Ready", preview)
 
         except Exception as e:
             print(f"❌ Transcription error: {str(e)}")
             self.current_text = f"Error: {str(e)}"
-            # Show error on main thread
-            rumps.Timer(lambda _: self._show_error(str(e)), 0.1).start()
+            self._send_notification("Transcription Error", str(e)[:100])
 
         finally:
             # Reset state
@@ -90,9 +90,16 @@ class OtisTheScribeApp(rumps.App):
             self.title = "🎤"
             self.menu["Start Recording"].title = "Start Recording"
 
-    def _show_error(self, error_msg):
-        """Show error dialog on main thread."""
-        rumps.alert("Transcription Error", f"Failed to transcribe: {error_msg}")
+    def _send_notification(self, title, message):
+        """Send macOS notification using osascript (no Info.plist needed)."""
+        # Remove problematic characters for AppleScript (full text preserved in app)
+        safe_message = message.replace('"', "'").replace('\\', '').replace('\n', ' ')
+        safe_title = title.replace('"', "'").replace('\\', '').replace('\n', ' ')
+
+        subprocess.run([
+            'osascript', '-e',
+            f'display notification "{safe_message}" with title "{safe_title}"'
+        ], capture_output=True)
 
     def show_text_window(self, sender):
         """Show the transcription text and copy to clipboard."""
