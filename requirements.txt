@@ -1,6 +1,5 @@
+git+https://github.com/guacachips/otis-scribe-engine.git#egg=otis-scribe-engine[whisper,gemini]
 rumps>=0.4.0
-sounddevice>=0.4.6
-scipy>=1.11.0
-google-genai>=1.0.0
-python-dotenv>=1.0.0
-numpy>=1.24.0
+
+# For local development (editing library), use:
+# -e ../otis-scribe-engine[whisper,gemini]
