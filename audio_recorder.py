@@ -8,6 +8,7 @@ import numpy as np
 from scipy.io import wavfile
 from pathlib import Path
 import tempfile
+import time
 
 
 class AudioRecorder:
@@ -24,6 +25,8 @@ class AudioRecorder:
         self.channels = channels
         self.recording = []
         self.is_recording = False
+        self.start_time = None
+        self.duration = 0
 
     def start_recording(self):
         """Start recording audio from the microphone."""
@@ -32,6 +35,7 @@ class AudioRecorder:
 
         self.recording = []
         self.is_recording = True
+        self.start_time = time.time()  # Track start time
 
         # Start recording in a stream
         self.stream = sd.InputStream(
@@ -42,17 +46,20 @@ class AudioRecorder:
         self.stream.start()
 
     def stop_recording(self):
-        """Stop recording and return the audio file path.
+        """Stop recording and return the audio file path and duration.
 
         Returns:
-            Path to the saved WAV file
+            tuple: (file_path, duration_seconds)
         """
         if not self.is_recording:
-            return None
+            return None, 0
 
         self.is_recording = False
         self.stream.stop()
         self.stream.close()
+
+        # Calculate duration
+        self.duration = time.time() - self.start_time if self.start_time else 0
 
         # Convert list of chunks to numpy array
         audio_data = np.concatenate(self.recording, axis=0)
@@ -61,7 +68,7 @@ class AudioRecorder:
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
         wavfile.write(temp_file.name, self.sample_rate, audio_data)
 
-        return temp_file.name
+        return temp_file.name, self.duration
 
     def _audio_callback(self, indata, frames, time, status):
         """Callback function for audio stream.

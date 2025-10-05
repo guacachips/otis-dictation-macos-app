@@ -4,11 +4,15 @@ A simple voice-to-text application that lives in your macOS menu bar.
 Click to record, transcribe with Gemini, and copy the text.
 """
 
+import os
 import rumps
 import threading
 import subprocess
 from audio_recorder import AudioRecorder
 from transcriber import get_transcriber
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class OtisTheScribeApp(rumps.App):
@@ -26,11 +30,17 @@ class OtisTheScribeApp(rumps.App):
             quit_button=None
         )
 
+        # Check for debug mode
+        self.debug = os.environ.get("DEBUG", "false").lower() == "true"
+
         # Initialize components
         self.recorder = AudioRecorder()
-        self.transcriber = get_transcriber("gemini")
+        self.transcriber = get_transcriber("gemini", debug=self.debug)
         self.state = self.STATE_IDLE
         self.current_text = ""
+
+        if self.debug:
+            print("🔬 DEBUG MODE ENABLED - Token counting active")
 
         # Create menu items
         self.menu = [
@@ -67,13 +77,37 @@ class OtisTheScribeApp(rumps.App):
     def _transcribe_audio(self):
         """Transcribe the recorded audio (runs in background thread)."""
         try:
-            # Stop recording and get file path
-            audio_file = self.recorder.stop_recording()
+            # Stop recording and get file path + duration
+            audio_file, audio_duration = self.recorder.stop_recording()
 
             if audio_file:
                 # Transcribe
-                self.current_text = self.transcriber.transcribe(audio_file)
-                print(f"✅ Transcription complete: {self.current_text}")
+                result = self.transcriber.transcribe(audio_file)
+                self.current_text = result['text']
+                transcription_time = result['transcription_time']
+
+                # Calculate performance metrics
+                realtime_factor = transcription_time / audio_duration if audio_duration > 0 else 0
+                speed_multiplier = audio_duration / transcription_time if transcription_time > 0 else 0
+
+                # Display metrics
+                print("\n" + "="*60)
+                print(f"🎙️  Audio Duration:    {audio_duration:.2f}s")
+                print(f"⏱️  Transcription Time: {transcription_time:.2f}s")
+                print(f"📊 Realtime Factor:   {realtime_factor:.2f}x")
+                print(f"🚀 Speed:             {speed_multiplier:.1f}x faster than audio")
+
+                # Debug mode: Show token and cost info
+                if self.debug and 'tokens' in result:
+                    tokens = result['tokens']
+                    print(f"\n💰 TOKEN USAGE:")
+                    print(f"   Input:  {tokens['total_tokens']:,} tokens (${tokens['input_cost']:.6f})")
+                    print(f"   Output: {tokens['output_tokens']:,} tokens (${tokens['output_cost']:.6f})")
+                    print(f"   Total:  ${tokens['total_cost']:.6f}")
+                    print(f"   Efficiency: {tokens['total_tokens']/audio_duration:.0f} tokens/second")
+
+                print(f"\n✅ Transcription: {self.current_text}")
+                print("="*60 + "\n")
 
                 # Send notification using osascript (no setup required!)
                 preview = self.current_text[:100] + "..." if len(self.current_text) > 100 else self.current_text
