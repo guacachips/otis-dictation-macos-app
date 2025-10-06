@@ -15,7 +15,7 @@ from otis_scribe_engine import (
     get_transcriber,
     UserSettings
 )
-from otis_scribe_engine.scripts.download_models import ModelDownloader
+# Model downloads are now handled automatically by openai-whisper
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -49,7 +49,6 @@ class OtisDictationApp(rumps.App):
             rumps.MenuItem("Show Last Transcription", callback=self.show_text_window),
             rumps.separator,
             rumps.MenuItem("Transcription Settings", callback=self.show_settings),
-            rumps.MenuItem("Download Whisper Models", callback=self.download_models),
             rumps.separator,
             rumps.MenuItem("Quit", callback=rumps.quit_application)
         ]
@@ -114,7 +113,7 @@ class OtisDictationApp(rumps.App):
                 transcriber = get_transcriber("gemini", api_key=api_key, debug=self.debug)
             else:
                 model_id = f"openai/whisper-{settings.whisper_model}"
-                transcriber = get_transcriber("whisper", model_id=model_id, debug=self.debug)
+                transcriber = get_transcriber("whisper", model_id=model_id, debug=self.debug, language=settings.language)
 
             result = transcriber.transcribe(audio_file)
             self.current_text = result['text']
@@ -152,12 +151,16 @@ class OtisDictationApp(rumps.App):
             self._send_notification("Transcription Error", str(e)[:100])
 
         finally:
+            # Clean up temp file unless in debug mode
             if audio_file and Path(audio_file).exists():
-                try:
-                    Path(audio_file).unlink()
-                    print(f"🗑️  Cleaned up temporary audio file")
-                except Exception as e:
-                    print(f"⚠️  Failed to delete temp file: {e}")
+                if not self.debug:
+                    try:
+                        Path(audio_file).unlink()
+                        print(f"🗑️  Cleaned up temporary audio file")
+                    except Exception as e:
+                        print(f"⚠️  Failed to delete temp file: {e}")
+                else:
+                    print(f"🔍 Debug: Audio file kept at {audio_file}")
 
             self.state = self.STATE_IDLE
             self.title = "🎤"
@@ -167,23 +170,33 @@ class OtisDictationApp(rumps.App):
         """Show transcription settings dialog."""
         settings = UserSettings.load()
 
-        current_engine = settings.transcription_engine
-        current_model = settings.whisper_model
-
+        # First ask for engine
         engine_choice = rumps.alert(
-            title="Transcription Settings",
+            title="Transcription Engine",
             message="Choose transcription engine:",
             ok="Gemini (Cloud)",
             cancel="Whisper (Local)"
         )
 
         if engine_choice == 1:
+            # Gemini selected - no language choice needed (handles it automatically)
             settings.transcription_engine = "gemini"
             settings.save()
             rumps.alert("Settings Saved", "Using Gemini API for transcription")
         else:
+            # Whisper selected - ask for language
             settings.transcription_engine = "whisper"
 
+            lang_choice = rumps.alert(
+                title="Language Settings",
+                message="Choose transcription language for Whisper:",
+                ok="French",
+                cancel="English"
+            )
+
+            settings.language = "fr" if lang_choice == 1 else "en"
+
+            # Ask for model
             model_choice = rumps.alert(
                 title="Whisper Model",
                 message="Choose Whisper model size:",
@@ -198,57 +211,15 @@ class OtisDictationApp(rumps.App):
                     title="Whisper Model",
                     message="Choose Whisper model:",
                     ok="Base (Balanced)",
-                    cancel="Large-Turbo (Best)"
+                    cancel="Turbo (Best Quality)"
                 )
-                settings.whisper_model = "base" if model_choice_2 == 1 else "large-turbo"
+                if model_choice_2 == 1:
+                    settings.whisper_model = "base"
+                else:
+                    settings.whisper_model = "large-v3-turbo"
 
             settings.save()
-            rumps.alert("Settings Saved", f"Using Whisper ({settings.whisper_model}) for transcription")
-
-    def download_models(self, sender):
-        """Download Whisper models for offline use."""
-        response = rumps.alert(
-            title="Download Whisper Models",
-            message="This will download Whisper models for offline transcription.\n\nThis may take several minutes and requires ~2-3GB disk space.\n\nProceed?",
-            ok="Download",
-            cancel="Cancel"
-        )
-
-        if response != 1:
-            return
-
-        def download_in_background():
-            try:
-                rumps.notification(
-                    title="Otis Dictation",
-                    subtitle="Downloading models...",
-                    message="This may take several minutes"
-                )
-
-                downloader = ModelDownloader()
-                results = downloader.download_all_models()
-
-                all_success = all(results.values())
-                if all_success:
-                    rumps.notification(
-                        title="Otis Dictation",
-                        subtitle="Download Complete",
-                        message="All Whisper models ready for offline use"
-                    )
-                else:
-                    rumps.notification(
-                        title="Otis Dictation",
-                        subtitle="Download Incomplete",
-                        message="Some models failed. Check terminal for details."
-                    )
-            except Exception as e:
-                rumps.notification(
-                    title="Otis Dictation",
-                    subtitle="Download Failed",
-                    message=str(e)[:100]
-                )
-
-        threading.Thread(target=download_in_background, daemon=True).start()
+            rumps.alert("Settings Saved", f"Using Whisper ({settings.whisper_model}) for transcription in {settings.language.upper()}")
 
     def show_text_window(self, sender):
         """Show the transcription text and copy to clipboard."""
