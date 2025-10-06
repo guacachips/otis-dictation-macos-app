@@ -120,8 +120,19 @@ class OtisDictationApp(rumps.App):
             self.settings_menu,
             rumps.MenuItem("Telemetry Settings", callback=self.show_telemetry_settings),
             rumps.separator,
-            rumps.MenuItem("Quit", callback=rumps.quit_application)
+            rumps.MenuItem("Quit", callback=self.clean_quit)
         ]
+
+    def clean_quit(self, sender=None):
+        """Clean up resources before quitting."""
+        import time
+
+        if self.state == self.STATE_RECORDING and self.recorder:
+            print("Stopping recording before quit...")
+            self.recorder.stop_recording()
+            time.sleep(0.5)
+
+        rumps.quit_application()
 
     def toggle_recording(self, sender):
         """Start or stop recording based on current state."""
