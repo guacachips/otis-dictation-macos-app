@@ -26,6 +26,9 @@ python app.py
 2. **Minimal UI** - Only essential menu items
 3. **Clean error handling** - User-friendly alerts
 4. **No verbose docs** - README should be <50 lines
+5. **Code correctness first** - Prioritize correctness and clarity over speed/efficiency (unless specified)
+6. **Minimal comments** - Don't write organizational comments that summarize code. Only explain "why" when logic is tricky/non-obvious
+7. **Consolidate files** - Add functionality to existing files rather than creating many small files
 
 ## Key Components
 

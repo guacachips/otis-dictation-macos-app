@@ -8,17 +8,76 @@ import os
 import rumps
 import threading
 import subprocess
+import json
 from pathlib import Path
+from dataclasses import dataclass, asdict
 from otis_scribe_engine import (
     AudioRecorder,
     VADConfig,
-    get_transcriber,
-    UserSettings
+    get_transcriber
 )
-# Model downloads are now handled automatically by openai-whisper
 from dotenv import load_dotenv
+from database import TranscriptionDatabase
 
 load_dotenv()
+
+
+@dataclass
+class AppSettings:
+    """App-specific settings (not transcription-related)"""
+    telemetry_enabled: bool = True
+
+    @classmethod
+    def get_config_path(cls) -> Path:
+        return Path.home() / ".otis-dictation-macos-app" / "config.json"
+
+    @classmethod
+    def load(cls) -> 'AppSettings':
+        config_file = cls.get_config_path()
+        if config_file.exists():
+            try:
+                with open(config_file, 'r') as f:
+                    data = json.load(f)
+                return cls(**data)
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"Warning: Failed to load app settings: {e}")
+        return cls()
+
+    def save(self):
+        config_dir = self.get_config_path().parent
+        config_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.get_config_path(), 'w') as f:
+            json.dump(asdict(self), f, indent=2)
+
+
+@dataclass
+class TranscriptionSettings:
+    """Transcription settings (app-managed persistence)"""
+    transcription_engine: str = "gemini"
+    whisper_model: str = "tiny"
+    language: str = "fr"
+
+    @classmethod
+    def get_config_path(cls) -> Path:
+        return Path.home() / ".otis-dictation-macos-app" / "transcription.json"
+
+    @classmethod
+    def load(cls) -> 'TranscriptionSettings':
+        config_file = cls.get_config_path()
+        if config_file.exists():
+            try:
+                with open(config_file, 'r') as f:
+                    data = json.load(f)
+                return cls(**data)
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"Warning: Failed to load transcription settings: {e}")
+        return cls()
+
+    def save(self):
+        config_dir = self.get_config_path().parent
+        config_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.get_config_path(), 'w') as f:
+            json.dump(asdict(self), f, indent=2)
 
 
 class OtisDictationApp(rumps.App):
@@ -39,16 +98,23 @@ class OtisDictationApp(rumps.App):
         self.state = self.STATE_IDLE
         self.current_text = ""
         self.recorder = None
+        self.db = TranscriptionDatabase()
 
         if self.debug:
             print("🔬 DEBUG MODE ENABLED - Detailed metrics active")
+
+        # Build dynamic history submenu
+        self.history_menu = rumps.MenuItem("Transcription History")
+        self._update_history_menu()
 
         self.menu = [
             rumps.MenuItem("Start Recording", callback=self.toggle_recording),
             rumps.separator,
             rumps.MenuItem("Show Last Transcription", callback=self.show_text_window),
+            self.history_menu,
             rumps.separator,
             rumps.MenuItem("Transcription Settings", callback=self.show_settings),
+            rumps.MenuItem("Telemetry Settings", callback=self.show_telemetry_settings),
             rumps.separator,
             rumps.MenuItem("Quit", callback=rumps.quit_application)
         ]
@@ -104,7 +170,7 @@ class OtisDictationApp(rumps.App):
     def _transcribe_audio(self, audio_file, audio_duration):
         """Transcribe the recorded audio."""
         try:
-            settings = UserSettings.load()
+            settings = TranscriptionSettings.load()
 
             if settings.transcription_engine == "gemini":
                 api_key = os.getenv("GOOGLE_API_KEY")
@@ -142,6 +208,33 @@ class OtisDictationApp(rumps.App):
             print(f"\n✅ Transcription: {self.current_text}")
             print("="*60 + "\n")
 
+            tokens_total = result.get('tokens', {}).get('total_tokens') if 'tokens' in result else None
+            cost_total = result.get('tokens', {}).get('total_cost') if 'tokens' in result else None
+
+            app_settings = AppSettings.load()
+            if app_settings.telemetry_enabled:
+                self.db.save_transcription(
+                    text=self.current_text,
+                    engine=settings.transcription_engine,
+                    model=result.get('model'),
+                    language=settings.language if settings.transcription_engine == "whisper" else None,
+                    audio_duration=audio_duration,
+                    transcription_time=transcription_time,
+                    realtime_factor=realtime_factor,
+                    tokens_total=tokens_total,
+                    cost_total=cost_total,
+                    save_telemetry=True
+                )
+                print("💾 Saved to history database (with telemetry)")
+            else:
+                self.db.save_transcription(
+                    text=self.current_text,
+                    save_telemetry=False
+                )
+                print("💾 Saved to history database (telemetry disabled)")
+
+            self._update_history_menu()
+
             preview = self.current_text[:100] + "..." if len(self.current_text) > 100 else self.current_text
             self._send_notification("Transcription Ready", preview)
 
@@ -168,7 +261,7 @@ class OtisDictationApp(rumps.App):
 
     def show_settings(self, sender):
         """Show transcription settings dialog."""
-        settings = UserSettings.load()
+        settings = TranscriptionSettings.load()
 
         # First ask for engine
         engine_choice = rumps.alert(
@@ -256,6 +349,95 @@ class OtisDictationApp(rumps.App):
         )
         process.communicate(text.encode('utf-8'))
         print(f"📋 Copied to clipboard: {len(text)} characters")
+
+    def _update_history_menu(self):
+        """Update history submenu with recent transcriptions."""
+        if hasattr(self.history_menu, '_menu') and self.history_menu._menu is not None:
+            self.history_menu.clear()
+
+        history = self.db.get_history(limit=15)
+
+        if not history:
+            self.history_menu.add(rumps.MenuItem("No history yet", callback=None))
+        else:
+            for item in history:
+                from datetime import datetime, timezone
+                created_at = datetime.fromisoformat(item['created_at'])
+                # SQLite stores in UTC, convert to local time
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                local_time = created_at.astimezone()
+                timestamp = local_time.strftime("%b %d, %H:%M")
+
+                text_preview = item['text'][:40] + "..." if len(item['text']) > 40 else item['text']
+                title = f"{timestamp} - {text_preview}"
+
+                def make_callback(session_id):
+                    return lambda sender: self._show_history_item(session_id)
+
+                menu_item = rumps.MenuItem(title, callback=make_callback(item['id']))
+                self.history_menu.add(menu_item)
+
+            self.history_menu.add(rumps.separator)
+            self.history_menu.add(rumps.MenuItem("Clear History...", callback=self._clear_history))
+
+    def _show_history_item(self, session_id):
+        """Show full transcription from history and copy to clipboard."""
+        text = self.db.get_transcription(session_id)
+
+        if text:
+            self._copy_to_clipboard(text)
+            preview = text if len(text) <= 500 else text[:500] + "..."
+            rumps.alert(
+                title="Transcription (Copied to Clipboard ✓)",
+                message=preview,
+                ok="Done"
+            )
+        else:
+            rumps.alert("Error", "Transcription not found")
+
+    def _clear_history(self, sender):
+        """Clear sensitive transcription data (keep telemetry)."""
+        response = rumps.alert(
+            title="Clear History",
+            message="Delete all transcribed text? (Telemetry data will be kept for analytics)",
+            ok="Clear History",
+            cancel="Cancel"
+        )
+
+        if response == 1:  # OK button clicked
+            self.db.clear_sensitive_data()
+            self._update_history_menu()
+            rumps.alert("History Cleared", "All transcription text has been deleted. Telemetry data preserved.")
+
+    def show_telemetry_settings(self, sender):
+        """Show telemetry opt-in/opt-out settings."""
+        app_settings = AppSettings.load()
+
+        if app_settings.telemetry_enabled:
+            response = rumps.alert(
+                title="Telemetry Settings",
+                message="Telemetry is currently ENABLED.\n\nWe collect anonymous usage data (engine, model, duration, performance) to improve the app. Your transcription text is never sent.\n\nDisable telemetry?",
+                ok="Disable",
+                cancel="Keep Enabled"
+            )
+
+            if response == 1:
+                app_settings.telemetry_enabled = False
+                app_settings.save()
+                rumps.alert("Telemetry Disabled", "Usage data collection disabled. Existing telemetry data preserved for your records.")
+        else:
+            response = rumps.alert(
+                title="Telemetry Settings",
+                message="Telemetry is currently DISABLED.\n\nEnabling telemetry helps us improve performance and features. Only anonymous usage data is collected - never your transcriptions.\n\nEnable telemetry?",
+                ok="Enable",
+                cancel="Keep Disabled"
+            )
+
+            if response == 1:
+                app_settings.telemetry_enabled = True
+                app_settings.save()
+                rumps.alert("Telemetry Enabled", "Thank you! Usage data collection enabled.")
 
 
 if __name__ == "__main__":
