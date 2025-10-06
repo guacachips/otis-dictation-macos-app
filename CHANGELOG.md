@@ -11,16 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transcription history with SQLite database (privacy-first 2-table architecture)
 - History UI submenu showing last 15 transcriptions with click-to-copy
 - Telemetry opt-in/out system (separate from transcription text)
-- App-level settings persistence (telemetry preferences)
-- Transcription settings persistence (migrated from library)
-- Support for multi-client architecture
 - "Clear History" feature (keeps telemetry for analytics)
 - Database sync tracking with `synced_at` column for future server sync
 - Code principles documentation in AGENTS.md
 
 ### Changed
-- Refactored settings: separated app-level from transcription settings
-- Removed dependency on library's UserSettings (multi-client ready)
+- Settings now managed at app-level (migrated from library)
 - Switched to local development mode in requirements.txt
 
 ## [0.2.0] - 2025-10-05
