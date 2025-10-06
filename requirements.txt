@@ -1,5 +1,5 @@
-# git+https://github.com/guacachips/otis-scribe-engine.git#egg=otis-scribe-engine[whisper,gemini]
+# git+https://github.com/guacachips/otis-scribe-engine.git#egg=otis-scribe-engine[whisper,gemini,mistral]
 rumps>=0.4.0
 
 # For local development (editing library), use:
--e ../otis-scribe-engine[whisper,gemini]
+-e ../otis-scribe-engine[whisper,gemini,mistral]

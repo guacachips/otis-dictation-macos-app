@@ -177,6 +177,11 @@ class OtisDictationApp(rumps.App):
                 if not api_key:
                     raise ValueError("GOOGLE_API_KEY not found in environment")
                 transcriber = get_transcriber("gemini", api_key=api_key, debug=self.debug)
+            elif settings.transcription_engine == "mistral":
+                api_key = os.getenv("MISTRAL_API_KEY")
+                if not api_key:
+                    raise ValueError("MISTRAL_API_KEY not found in environment")
+                transcriber = get_transcriber("mistral", api_key=api_key, debug=self.debug)
             else:
                 model_id = f"openai/whisper-{settings.whisper_model}"
                 transcriber = get_transcriber("whisper", model_id=model_id, debug=self.debug, language=settings.language)
@@ -263,21 +268,30 @@ class OtisDictationApp(rumps.App):
         """Show transcription settings dialog."""
         settings = TranscriptionSettings.load()
 
-        # First ask for engine
-        engine_choice = rumps.alert(
+        deployment_choice = rumps.alert(
             title="Transcription Engine",
-            message="Choose transcription engine:",
-            ok="Gemini (Cloud)",
-            cancel="Whisper (Local)"
+            message="Choose deployment type:",
+            ok="Cloud (API)",
+            cancel="Local (Whisper)"
         )
 
-        if engine_choice == 1:
-            # Gemini selected - no language choice needed (handles it automatically)
-            settings.transcription_engine = "gemini"
-            settings.save()
-            rumps.alert("Settings Saved", "Using Gemini API for transcription")
+        if deployment_choice == 1:
+            provider_choice = rumps.alert(
+                title="Cloud Provider",
+                message="Choose cloud transcription provider:",
+                ok="Gemini",
+                cancel="Mistral"
+            )
+
+            if provider_choice == 1:
+                settings.transcription_engine = "gemini"
+                settings.save()
+                rumps.alert("Settings Saved", "Using Gemini API for transcription")
+            else:
+                settings.transcription_engine = "mistral"
+                settings.save()
+                rumps.alert("Settings Saved", "Using Mistral API for transcription")
         else:
-            # Whisper selected - ask for language
             settings.transcription_engine = "whisper"
 
             lang_choice = rumps.alert(
@@ -289,7 +303,6 @@ class OtisDictationApp(rumps.App):
 
             settings.language = "fr" if lang_choice == 1 else "en"
 
-            # Ask for model
             model_choice = rumps.alert(
                 title="Whisper Model",
                 message="Choose Whisper model size:",

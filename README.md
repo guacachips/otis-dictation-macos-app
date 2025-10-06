@@ -8,10 +8,10 @@ macOS menu bar voice-to-text app with VAD auto-stop.
 pip install -r requirements.txt
 ```
 
-**For Gemini API** (optional):
+**For Cloud APIs** (optional):
 ```bash
 cp .env.example .env
-# Add GOOGLE_API_KEY to .env
+# Add GOOGLE_API_KEY and/or MISTRAL_API_KEY to .env
 ```
 
 ## Run
@@ -23,7 +23,8 @@ python app.py
 ## Settings
 
 Menu bar → Transcription Settings:
-- **Engine**: Gemini (cloud) or Whisper (local)
+- **Deployment**: Cloud (API) or Local (Whisper)
+- **Cloud Provider**: Gemini or Mistral
 - **Language**: French/English (Whisper only)
 - **Model**: Tiny/Base/Turbo (Whisper only)
 
