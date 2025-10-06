@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-10-06
+
+### Added
+- Mistral API transcription support with improved settings UX
+- Settings reset button and nested menu structure
+- Default to Whisper for better out-of-box experience
+
+### Changed
+- Removed cost_total from database schema (server-side calculation)
+- Time values now stored with 2 decimal precision
+- Menu item renamed to "Copy Last Transcription"
+- Copy Last Transcription now fetches from database if no current session
+
+### Fixed
+- Semaphore leak warning on quit by cleaning up recording threads
+
+### Removed
+- Database migration code (clean schema for new users)
+
 ## [0.3.0] - 2025-10-05
 
 ### Added
@@ -42,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clipboard auto-copy functionality
 - Environment-based configuration (.env support)
 
+[0.4.0]: https://github.com/guacachips/otis-dictation-macos-app/releases/tag/v0.4.0
 [0.3.0]: https://github.com/guacachips/otis-dictation-macos-app/releases/tag/v0.3.0
 [0.2.0]: https://github.com/guacachips/otis-dictation-macos-app/releases/tag/v0.2.0
 [0.1.0]: https://github.com/guacachips/otis-dictation-macos-app/releases/tag/v0.1.0
