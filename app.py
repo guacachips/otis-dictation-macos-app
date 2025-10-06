@@ -359,13 +359,20 @@ class OtisDictationApp(rumps.App):
 
     def show_text_window(self, sender):
         """Show the transcription text and copy to clipboard."""
-        if not self.current_text:
+        text_to_show = self.current_text
+
+        if not text_to_show:
+            history = self.db.get_history(limit=1)
+            if history and history[0].get('text'):
+                text_to_show = history[0]['text']
+
+        if not text_to_show:
             rumps.alert("No Transcription", "No transcription available yet. Record something first!")
             return
 
-        self._copy_to_clipboard(self.current_text)
+        self._copy_to_clipboard(text_to_show)
 
-        preview = self.current_text if len(self.current_text) <= 500 else self.current_text[:500] + "..."
+        preview = text_to_show if len(text_to_show) <= 500 else text_to_show[:500] + "..."
 
         rumps.alert(
             title="Transcription (Copied to Clipboard ✓)",
