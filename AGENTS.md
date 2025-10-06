@@ -77,19 +77,26 @@ python app.py
 
 7. **Create GitHub release**:
    ```bash
-   # Create notes file
+   # Create notes file (IMPORTANT: use --notes-file, NOT --notes)
+   # This prevents shell from executing code blocks with backticks
    cat > /tmp/release-notes.md << 'EOF'
    ## Highlights
    - Feature 1
    - Feature 2
 
    ## Installation
-   [instructions]
+   ```bash
+   git clone https://github.com/user/repo.git
+   cd repo
+   pip install -r requirements.txt
+   ```
    EOF
 
-   # Create release
+   # Create release with notes file
    gh release create vX.Y.Z --title "vX.Y.Z - Feature Name" --notes-file /tmp/release-notes.md
    ```
+
+   **Why use `--notes-file`?** Using `--notes "..."` with code blocks causes the shell to execute backtick content. Always write notes to a file first.
 
 **Commit message convention:**
 - `fix:` - Bug fixes
