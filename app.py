@@ -229,7 +229,6 @@ class OtisDictationApp(rumps.App):
             print("="*60 + "\n")
 
             tokens_total = result.get('tokens', {}).get('total_tokens') if 'tokens' in result else None
-            cost_total = result.get('tokens', {}).get('total_cost') if 'tokens' in result else None
 
             app_settings = AppSettings.load()
             if app_settings.telemetry_enabled:
@@ -238,11 +237,10 @@ class OtisDictationApp(rumps.App):
                     engine=settings.transcription_engine,
                     model=result.get('model'),
                     language=settings.language if settings.transcription_engine == "whisper" else None,
-                    audio_duration=audio_duration,
-                    transcription_time=transcription_time,
-                    realtime_factor=realtime_factor,
+                    audio_duration=round(audio_duration, 2),
+                    transcription_time=round(transcription_time, 2),
+                    realtime_factor=round(realtime_factor, 2),
                     tokens_total=tokens_total,
-                    cost_total=cost_total,
                     save_telemetry=True
                 )
                 print("💾 Saved to history database (with telemetry)")

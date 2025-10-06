@@ -58,17 +58,10 @@ class TranscriptionDatabase:
                     transcription_time REAL,
                     realtime_factor REAL,
                     tokens_total INTEGER,
-                    cost_total REAL,
                     error TEXT,
                     synced_at TIMESTAMP DEFAULT NULL
                 )
             """)
-
-            # Add synced_at column if it doesn't exist (migration)
-            cursor.execute("PRAGMA table_info(sessions)")
-            columns = [col[1] for col in cursor.fetchall()]
-            if 'synced_at' not in columns:
-                cursor.execute("ALTER TABLE sessions ADD COLUMN synced_at TIMESTAMP DEFAULT NULL")
 
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS transcriptions (
@@ -94,7 +87,6 @@ class TranscriptionDatabase:
         transcription_time: Optional[float] = None,
         realtime_factor: Optional[float] = None,
         tokens_total: Optional[int] = None,
-        cost_total: Optional[float] = None,
         error: Optional[str] = None,
         save_telemetry: bool = True
     ) -> int:
@@ -117,11 +109,11 @@ class TranscriptionDatabase:
                 cursor.execute("""
                     INSERT INTO sessions (
                         engine, model, language, audio_duration, transcription_time,
-                        realtime_factor, tokens_total, cost_total, error
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        realtime_factor, tokens_total, error
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     engine, model, language, audio_duration, transcription_time,
-                    realtime_factor, tokens_total, cost_total, error
+                    realtime_factor, tokens_total, error
                 ))
 
                 session_id = cursor.lastrowid
@@ -232,7 +224,7 @@ class TranscriptionDatabase:
                 SELECT
                     id, created_at, engine, model, language,
                     audio_duration, transcription_time, realtime_factor,
-                    tokens_total, cost_total
+                    tokens_total
                 FROM sessions
                 WHERE synced_at IS NULL
                   AND error IS NULL
