@@ -44,28 +44,51 @@ python app.py
 
 ## Releasing a New Version
 
-1. **Update version** in `setup.py` (if exists) or git tag only:
+1. **Test the app** - Run and verify everything works
+
+2. **Update CHANGELOG.md**:
+   - Add new version section with date
+   - Categorize changes: Added, Changed, Removed, Fixed
+   - Link version to GitHub release at bottom
+
+3. **Choose version number**:
    - Patch (0.1.0 → 0.1.1): Bug fixes, UI tweaks
    - Minor (0.1.0 → 0.2.0): New features
    - Major (0.x.x → 1.0.0): Breaking changes
 
-2. **Commit with convention**:
+4. **Commit and push**:
    ```bash
    git add .
-   git commit -m "fix: ..." # or feat: or chore:
+   git commit -m "feat: your feature description"  # or fix:/docs:/chore:
    git push
    ```
 
-3. **Version bump commit** (no prefix):
+5. **Version bump commit** (no prefix):
    ```bash
-   git commit -m "Bumped to VX.Y.Z"
+   git commit --allow-empty -m "Bumped to VX.Y.Z"
    git push
    ```
 
-4. **Create and push tag**:
+6. **Create and push tag**:
    ```bash
    git tag -a vX.Y.Z -m "Release vX.Y.Z"
    git push origin vX.Y.Z
+   ```
+
+7. **Create GitHub release**:
+   ```bash
+   # Create notes file
+   cat > /tmp/release-notes.md << 'EOF'
+   ## Highlights
+   - Feature 1
+   - Feature 2
+
+   ## Installation
+   [instructions]
+   EOF
+
+   # Create release
+   gh release create vX.Y.Z --title "vX.Y.Z - Feature Name" --notes-file /tmp/release-notes.md
    ```
 
 **Commit message convention:**
@@ -74,6 +97,8 @@ python app.py
 - `chore:` - Maintenance/cleanup
 - `docs:` - Documentation
 - No prefix - Version bumps ("Bumped to VX.Y.Z")
+
+Keep commits concise - detailed info goes in CHANGELOG/release notes.
 
 ## What NOT to Do
 
