@@ -53,7 +53,7 @@ class AppSettings:
 @dataclass
 class TranscriptionSettings:
     """Transcription settings (app-managed persistence)"""
-    transcription_engine: str = "gemini"
+    transcription_engine: str = "whisper"
     whisper_model: str = "tiny"
     language: str = "fr"
 
@@ -107,13 +107,17 @@ class OtisDictationApp(rumps.App):
         self.history_menu = rumps.MenuItem("Transcription History")
         self._update_history_menu()
 
+        self.settings_menu = rumps.MenuItem("Transcription Settings")
+        self.settings_menu.add(rumps.MenuItem("Configure...", callback=self.show_settings))
+        self.settings_menu.add(rumps.MenuItem("Reset to Defaults", callback=self.reset_settings))
+
         self.menu = [
             rumps.MenuItem("Start Recording", callback=self.toggle_recording),
             rumps.separator,
             rumps.MenuItem("Show Last Transcription", callback=self.show_text_window),
             self.history_menu,
             rumps.separator,
-            rumps.MenuItem("Transcription Settings", callback=self.show_settings),
+            self.settings_menu,
             rumps.MenuItem("Telemetry Settings", callback=self.show_telemetry_settings),
             rumps.separator,
             rumps.MenuItem("Quit", callback=rumps.quit_application)
@@ -326,6 +330,21 @@ class OtisDictationApp(rumps.App):
 
             settings.save()
             rumps.alert("Settings Saved", f"Using Whisper ({settings.whisper_model}) for transcription in {settings.language.upper()}")
+
+    def reset_settings(self, sender):
+        """Reset transcription settings to defaults."""
+        response = rumps.alert(
+            title="Reset to Defaults",
+            message="Reset transcription settings to defaults?\n\nDefault: Whisper (Tiny, French)",
+            ok="Reset",
+            cancel="Cancel"
+        )
+
+        if response == 1:
+            config_file = TranscriptionSettings.get_config_path()
+            if config_file.exists():
+                config_file.unlink()
+            rumps.alert("Settings Reset", "Transcription settings reset to defaults:\n• Engine: Whisper (Local)\n• Model: Tiny\n• Language: French")
 
     def show_text_window(self, sender):
         """Show the transcription text and copy to clipboard."""
