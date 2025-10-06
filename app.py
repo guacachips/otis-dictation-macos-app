@@ -114,7 +114,7 @@ class OtisDictationApp(rumps.App):
         self.menu = [
             rumps.MenuItem("Start Recording", callback=self.toggle_recording),
             rumps.separator,
-            rumps.MenuItem("Show Last Transcription", callback=self.show_text_window),
+            rumps.MenuItem("Copy Last Transcription", callback=self.show_text_window),
             self.history_menu,
             rumps.separator,
             self.settings_menu,
