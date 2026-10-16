@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Microphone submenu: System Default or a specific input device, saved by name in `config.json`
 - "Microphone problem" notification when the selected input delivers no signal
 
+### Changed
+- Menu bar updates from the recording thread are posted to the main thread
+
 ### Fixed
 - Recordings came from a stale microphone after the macOS default input changed (requires otis-scribe-engine 0.3.2)
 - Silent recordings no longer reach the transcriber (Whisper hallucinated text on them)

@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Optional
+from PyObjCTools import AppHelper
 from otis_scribe_engine import (
     AudioRecorder,
     AudioDeviceManager,
@@ -151,10 +152,8 @@ class OtisDictationApp(rumps.App):
 
     def _start_recording(self):
         """Start recording audio with VAD."""
-        self._update_microphone_menu(refresh=True)
         self.state = self.STATE_RECORDING
-        self.title = "🔴"
-        self.menu["Start Recording"].title = "Stop Recording"
+        self._set_status("🔴", "Stop Recording")
 
         threading.Thread(target=self._record_with_vad, daemon=True).start()
 
@@ -176,19 +175,20 @@ class OtisDictationApp(rumps.App):
                 audio_file, audio_duration = self.recorder.record()
             finally:
                 # The stream is closed here, so re-initializing PortAudio to list devices is safe.
-                self._update_microphone_menu(refresh=True)
+                menu_data = self._microphone_menu_data(refresh=True)
+                if menu_data:
+                    AppHelper.callAfter(self._apply_microphone_menu, *menu_data)
 
             if audio_file and self.state == self.STATE_RECORDING:
                 self.state = self.STATE_TRANSCRIBING
-                self.title = "⏳"
-                self.menu["Start Recording"].title = "Transcribing..."
+                AppHelper.callAfter(self._set_status, "⏳", "Transcribing...")
                 self._transcribe_audio(audio_file, audio_duration)
 
         except DeadInputError as e:
             print(f"❌ Recording error: {str(e)}")
             self._send_notification(
                 "Microphone problem",
-                f"No signal from '{e.device_name}'. Pick another microphone in the Otis menu."
+                f"No signal from '{e.device_name}' (muted?). Pick another microphone in the Otis menu."
             )
             self._reset_to_idle()
 
@@ -197,9 +197,13 @@ class OtisDictationApp(rumps.App):
             self._reset_to_idle()
 
     def _reset_to_idle(self):
+        """Callable from the recording thread: AppKit changes are posted to the main thread."""
         self.state = self.STATE_IDLE
-        self.title = "🎤"
-        self.menu["Start Recording"].title = "Start Recording"
+        AppHelper.callAfter(self._set_status, "🎤", "Start Recording")
+
+    def _set_status(self, icon, label):
+        self.title = icon
+        self.menu["Start Recording"].title = label
 
     def _stop_recording(self):
         """Manually stop recording (override VAD)."""
@@ -275,7 +279,7 @@ class OtisDictationApp(rumps.App):
                 )
                 print("💾 Saved to history database (telemetry disabled)")
 
-            self._update_history_menu()
+            AppHelper.callAfter(self._update_history_menu)
 
             preview = self.current_text[:100] + "..." if len(self.current_text) > 100 else self.current_text
             self._send_notification("Transcription Ready", preview)
@@ -431,7 +435,13 @@ class OtisDictationApp(rumps.App):
         print(f"📋 Copied to clipboard: {len(text)} characters")
 
     def _update_microphone_menu(self, refresh):
-        """Rebuild the microphone submenu. refresh=True re-initializes PortAudio: never while a stream is open."""
+        """Rebuild the microphone submenu (main thread only)."""
+        menu_data = self._microphone_menu_data(refresh)
+        if menu_data:
+            self._apply_microphone_menu(*menu_data)
+
+    def _microphone_menu_data(self, refresh):
+        """Device names, saved choice and active device. refresh=True re-initializes PortAudio: never while a stream is open."""
         try:
             if refresh:
                 AudioDeviceManager.refresh()
@@ -443,8 +453,10 @@ class OtisDictationApp(rumps.App):
                 active = "none"
         except Exception as e:
             print(f"⚠️  Failed to list microphones: {e}")
-            return
+            return None
+        return names, chosen, active
 
+    def _apply_microphone_menu(self, names, chosen, active):
         if hasattr(self.microphone_menu, '_menu') and self.microphone_menu._menu is not None:
             self.microphone_menu.clear()
         self.microphone_menu.title = f"Microphone: {active}"
