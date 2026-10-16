@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.5.0] - 2026-10-16
 
 ### Added
-- Local Server (MLX) engine: transcription through a running `otis-speech-server` (requires otis-scribe-engine 0.4.0). Transcription Settings offers a third deployment choice, then Voxtral 4-bit, Whisper Turbo or Voxtral bf16; the language question is only asked for Whisper
+- Local Server (MLX) engine: transcription through a running `otis-speech-server` (requires otis-scribe-engine 0.4.0). Transcription Settings offers a third deployment choice, then Voxtral 4-bit or Whisper Turbo; the language question is only asked for Whisper
 - `server_url` (default `http://127.0.0.1:6847`) and `server_model` in `transcription.json`; existing settings files load unchanged
 - "Speech server not running" notification with the start command when the server is not reachable
 - Telemetry records the language for local server Whisper models (Voxtral detects it, so none is recorded)

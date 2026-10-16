@@ -28,7 +28,7 @@ Menu bar → Transcription Settings:
 - **Deployment**: Cloud (API), Local (Whisper) or Local Server (MLX)
 - **Cloud Provider**: Gemini or Mistral
 - **Language**: French/English (Whisper models only; Voxtral detects it)
-- **Model**: Tiny/Base/Turbo (Whisper) or Voxtral 4-bit/Whisper Turbo/Voxtral bf16 (Local Server)
+- **Model**: Tiny/Base/Turbo (Whisper) or Voxtral 4-bit/Whisper Turbo (Local Server)
 
 **Note**: Whisper models auto-download on first use to `~/.cache/whisper/`
 

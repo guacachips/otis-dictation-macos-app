@@ -65,6 +65,11 @@ class TranscriptionSettings:
     server_url: str = "http://127.0.0.1:6847"
     server_model: str = "voxtral-realtime-4bit"
 
+    def __post_init__(self):
+        # The bf16 option was dropped from the menu: settings saved with it fall back to the 4-bit model.
+        if self.server_model == "voxtral-realtime-bf16":
+            self.server_model = "voxtral-realtime-4bit"
+
     def effective_language(self) -> Optional[str]:
         """Language actually applied: Voxtral detects it itself, so it only counts for Whisper models."""
         if self.transcription_engine == "whisper":
@@ -415,15 +420,10 @@ class OtisDictationApp(rumps.App):
             title="Local Server Model",
             message="Choose the otis-speech-server model:",
             ok="Voxtral 4-bit (Fast)",
-            cancel="Whisper Turbo",
-            other="Voxtral bf16"
+            cancel="Whisper Turbo"
         )
         settings.transcription_engine = "local-server"
-        settings.server_model = {
-            1: "voxtral-realtime-4bit",
-            0: "whisper-large-v3-turbo",
-            -1: "voxtral-realtime-bf16",
-        }[model_choice]
+        settings.server_model = "voxtral-realtime-4bit" if model_choice == 1 else "whisper-large-v3-turbo"
 
         if settings.server_model.startswith("whisper"):
             settings.language = self._ask_language()
