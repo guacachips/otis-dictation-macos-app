@@ -22,6 +22,8 @@ python app.py
 
 ## Settings
 
+Menu bar → Microphone: System Default (follows macOS) or a specific input, saved by name.
+
 Menu bar → Transcription Settings:
 - **Deployment**: Cloud (API) or Local (Whisper)
 - **Cloud Provider**: Gemini or Mistral

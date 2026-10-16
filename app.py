@@ -11,8 +11,11 @@ import subprocess
 import json
 from pathlib import Path
 from dataclasses import dataclass, asdict
+from typing import Optional
 from otis_scribe_engine import (
     AudioRecorder,
+    AudioDeviceManager,
+    DeadInputError,
     VADConfig,
     get_transcriber
 )
@@ -26,6 +29,7 @@ load_dotenv()
 class AppSettings:
     """App-specific settings (not transcription-related)"""
     telemetry_enabled: bool = True
+    input_device_name: Optional[str] = None
 
     @classmethod
     def get_config_path(cls) -> Path:
@@ -107,6 +111,9 @@ class OtisDictationApp(rumps.App):
         self.history_menu = rumps.MenuItem("Transcription History")
         self._update_history_menu()
 
+        self.microphone_menu = rumps.MenuItem("Microphone")
+        self._update_microphone_menu(refresh=False)
+
         self.settings_menu = rumps.MenuItem("Transcription Settings")
         self.settings_menu.add(rumps.MenuItem("Configure...", callback=self.show_settings))
         self.settings_menu.add(rumps.MenuItem("Reset to Defaults", callback=self.reset_settings))
@@ -117,6 +124,7 @@ class OtisDictationApp(rumps.App):
             rumps.MenuItem("Copy Last Transcription", callback=self.show_text_window),
             self.history_menu,
             rumps.separator,
+            self.microphone_menu,
             self.settings_menu,
             rumps.MenuItem("Telemetry Settings", callback=self.show_telemetry_settings),
             rumps.separator,
@@ -143,6 +151,7 @@ class OtisDictationApp(rumps.App):
 
     def _start_recording(self):
         """Start recording audio with VAD."""
+        self._update_microphone_menu(refresh=True)
         self.state = self.STATE_RECORDING
         self.title = "🔴"
         self.menu["Start Recording"].title = "Stop Recording"
@@ -161,8 +170,13 @@ class OtisDictationApp(rumps.App):
             temp_dir = Path.home() / ".otis-dictation-macos-app" / "temp"
             temp_dir.mkdir(parents=True, exist_ok=True)
 
-            self.recorder = AudioRecorder(output_dir=temp_dir, vad_config=vad_config)
-            audio_file, audio_duration = self.recorder.record()
+            settings = AppSettings.load()
+            self.recorder = AudioRecorder(output_dir=temp_dir, device_id=settings.input_device_name, vad_config=vad_config)
+            try:
+                audio_file, audio_duration = self.recorder.record()
+            finally:
+                # The stream is closed here, so re-initializing PortAudio to list devices is safe.
+                self._update_microphone_menu(refresh=True)
 
             if audio_file and self.state == self.STATE_RECORDING:
                 self.state = self.STATE_TRANSCRIBING
@@ -170,11 +184,22 @@ class OtisDictationApp(rumps.App):
                 self.menu["Start Recording"].title = "Transcribing..."
                 self._transcribe_audio(audio_file, audio_duration)
 
+        except DeadInputError as e:
+            print(f"❌ Recording error: {str(e)}")
+            self._send_notification(
+                "Microphone problem",
+                f"No signal from '{e.device_name}'. Pick another microphone in the Otis menu."
+            )
+            self._reset_to_idle()
+
         except Exception as e:
             print(f"❌ Recording error: {str(e)}")
-            self.state = self.STATE_IDLE
-            self.title = "🎤"
-            self.menu["Start Recording"].title = "Start Recording"
+            self._reset_to_idle()
+
+    def _reset_to_idle(self):
+        self.state = self.STATE_IDLE
+        self.title = "🎤"
+        self.menu["Start Recording"].title = "Start Recording"
 
     def _stop_recording(self):
         """Manually stop recording (override VAD)."""
@@ -218,12 +243,11 @@ class OtisDictationApp(rumps.App):
             print(f"🚀 Speed:             {speed_multiplier:.1f}x faster than audio")
 
             if self.debug and 'tokens' in result:
-                tokens = result['tokens']
-                print(f"\n💰 TOKEN USAGE:")
-                print(f"   Input:  {tokens['total_tokens']:,} tokens (${tokens['input_cost']:.6f})")
-                print(f"   Output: {tokens['output_tokens']:,} tokens (${tokens['output_cost']:.6f})")
-                print(f"   Total:  ${tokens['total_cost']:.6f}")
-                print(f"   Efficiency: {tokens['total_tokens']/audio_duration:.0f} tokens/second")
+                # Debug output must never discard a successful transcription.
+                try:
+                    self._print_token_usage(result['tokens'], audio_duration)
+                except Exception as e:
+                    print(f"⚠️  Failed to print token usage: {e}")
 
             print(f"\n✅ Transcription: {self.current_text}")
             print("="*60 + "\n")
@@ -273,9 +297,17 @@ class OtisDictationApp(rumps.App):
                 else:
                     print(f"🔍 Debug: Audio file kept at {audio_file}")
 
-            self.state = self.STATE_IDLE
-            self.title = "🎤"
-            self.menu["Start Recording"].title = "Start Recording"
+            self._reset_to_idle()
+
+    @staticmethod
+    def _print_token_usage(tokens, audio_duration):
+        """Print whichever token counts the provider returned (keys differ per provider)."""
+        print(f"\n💰 TOKEN USAGE:")
+        for key, label in (("output_tokens", "Output"), ("total_tokens", "Total")):
+            if key in tokens:
+                print(f"   {label + ':':<7} {tokens[key]:,} tokens")
+        if tokens.get('total_tokens') and audio_duration > 0:
+            print(f"   Efficiency: {tokens['total_tokens']/audio_duration:.0f} tokens/second")
 
     def show_settings(self, sender):
         """Show transcription settings dialog."""
@@ -397,6 +429,50 @@ class OtisDictationApp(rumps.App):
         )
         process.communicate(text.encode('utf-8'))
         print(f"📋 Copied to clipboard: {len(text)} characters")
+
+    def _update_microphone_menu(self, refresh):
+        """Rebuild the microphone submenu. refresh=True re-initializes PortAudio: never while a stream is open."""
+        try:
+            if refresh:
+                AudioDeviceManager.refresh()
+            names = AudioDeviceManager.list_input_device_names()
+            chosen = AppSettings.load().input_device_name
+            try:
+                active = AudioDeviceManager.resolve_input_device(chosen)[1]['name']
+            except ValueError:
+                active = "none"
+        except Exception as e:
+            print(f"⚠️  Failed to list microphones: {e}")
+            return
+
+        if hasattr(self.microphone_menu, '_menu') and self.microphone_menu._menu is not None:
+            self.microphone_menu.clear()
+        self.microphone_menu.title = f"Microphone: {active}"
+
+        def make_callback(name):
+            return lambda sender: self._select_microphone(name)
+
+        default_item = rumps.MenuItem("System Default", callback=make_callback(None))
+        default_item.state = int(chosen is None)
+        self.microphone_menu.add(default_item)
+        self.microphone_menu.add(rumps.separator)
+
+        for name in names:
+            item = rumps.MenuItem(name, callback=make_callback(name))
+            item.state = int(name == chosen)
+            self.microphone_menu.add(item)
+
+        if chosen is not None and chosen not in names:
+            missing_item = rumps.MenuItem(f"{chosen} (not connected)", callback=None)
+            missing_item.state = 1
+            self.microphone_menu.add(missing_item)
+
+    def _select_microphone(self, name):
+        app_settings = AppSettings.load()
+        app_settings.input_device_name = name
+        app_settings.save()
+        print(f"🎙️  Microphone set to: {name or 'System Default'}")
+        self._update_microphone_menu(refresh=False)
 
     def _update_history_menu(self):
         """Update history submenu with recent transcriptions."""
