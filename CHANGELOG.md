@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-10-16
+
+### Added
+- Microphone submenu: System Default or a specific input device, saved by name in `config.json`
+- "Microphone problem" notification when the selected input delivers no signal
+
+### Fixed
+- Recordings came from a stale microphone after the macOS default input changed (requires otis-scribe-engine 0.3.2)
+- Silent recordings no longer reach the transcriber (Whisper hallucinated text on them)
+- Debug token output crashed with `KeyError: 'input_cost'` and discarded the transcription
+- Manual stop no longer saves the recording twice
+
 ## [0.4.0] - 2025-10-06
 
 ### Added
