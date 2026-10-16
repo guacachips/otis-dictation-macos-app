@@ -17,6 +17,7 @@ from otis_scribe_engine import (
     AudioRecorder,
     AudioDeviceManager,
     DeadInputError,
+    LocalServerUnavailableError,
     VADConfig,
     get_transcriber
 )
@@ -61,6 +62,16 @@ class TranscriptionSettings:
     transcription_engine: str = "whisper"
     whisper_model: str = "tiny"
     language: str = "fr"
+    server_url: str = "http://127.0.0.1:6847"
+    server_model: str = "voxtral-realtime-4bit"
+
+    def effective_language(self) -> Optional[str]:
+        """Language actually applied: Voxtral detects it itself, so it only counts for Whisper models."""
+        if self.transcription_engine == "whisper":
+            return self.language
+        if self.transcription_engine == "local-server" and self.server_model.startswith("whisper"):
+            return self.language
+        return None
 
     @classmethod
     def get_config_path(cls) -> Path:
@@ -215,21 +226,7 @@ class OtisDictationApp(rumps.App):
         """Transcribe the recorded audio."""
         try:
             settings = TranscriptionSettings.load()
-
-            if settings.transcription_engine == "gemini":
-                api_key = os.getenv("GOOGLE_API_KEY")
-                if not api_key:
-                    raise ValueError("GOOGLE_API_KEY not found in environment")
-                transcriber = get_transcriber("gemini", api_key=api_key, debug=self.debug)
-            elif settings.transcription_engine == "mistral":
-                api_key = os.getenv("MISTRAL_API_KEY")
-                if not api_key:
-                    raise ValueError("MISTRAL_API_KEY not found in environment")
-                transcriber = get_transcriber("mistral", api_key=api_key, debug=self.debug)
-            else:
-                model_id = f"openai/whisper-{settings.whisper_model}"
-                transcriber = get_transcriber("whisper", model_id=model_id, debug=self.debug, language=settings.language)
-
+            transcriber = self._create_transcriber(settings)
             result = transcriber.transcribe(audio_file)
             self.current_text = result['text']
             transcription_time = result['transcription_time']
@@ -264,7 +261,7 @@ class OtisDictationApp(rumps.App):
                     text=self.current_text,
                     engine=settings.transcription_engine,
                     model=result.get('model'),
-                    language=settings.language if settings.transcription_engine == "whisper" else None,
+                    language=settings.effective_language(),
                     audio_duration=round(audio_duration, 2),
                     transcription_time=round(transcription_time, 2),
                     realtime_factor=round(realtime_factor, 2),
@@ -283,6 +280,14 @@ class OtisDictationApp(rumps.App):
 
             preview = self.current_text[:100] + "..." if len(self.current_text) > 100 else self.current_text
             self._send_notification("Transcription Ready", preview)
+
+        except LocalServerUnavailableError as e:
+            print(f"❌ Transcription error: {str(e)}")
+            self.current_text = f"Error: {str(e)}"
+            self._send_notification(
+                "Speech server not running",
+                "Start it with: conda activate otis-speech-server; otis-speech-server"
+            )
 
         except Exception as e:
             print(f"❌ Transcription error: {str(e)}")
@@ -303,6 +308,29 @@ class OtisDictationApp(rumps.App):
 
             self._reset_to_idle()
 
+    def _create_transcriber(self, settings):
+        if settings.transcription_engine == "gemini":
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise ValueError("GOOGLE_API_KEY not found in environment")
+            return get_transcriber("gemini", api_key=api_key, debug=self.debug)
+        elif settings.transcription_engine == "mistral":
+            api_key = os.getenv("MISTRAL_API_KEY")
+            if not api_key:
+                raise ValueError("MISTRAL_API_KEY not found in environment")
+            return get_transcriber("mistral", api_key=api_key, debug=self.debug)
+        elif settings.transcription_engine == "local-server":
+            return get_transcriber(
+                "local-server",
+                base_url=settings.server_url,
+                model=settings.server_model,
+                language=settings.effective_language(),
+                debug=self.debug
+            )
+        else:
+            model_id = f"openai/whisper-{settings.whisper_model}"
+            return get_transcriber("whisper", model_id=model_id, debug=self.debug, language=settings.language)
+
     @staticmethod
     def _print_token_usage(tokens, audio_duration):
         """Print whichever token counts the provider returned (keys differ per provider)."""
@@ -317,14 +345,18 @@ class OtisDictationApp(rumps.App):
         """Show transcription settings dialog."""
         settings = TranscriptionSettings.load()
 
+        # rumps.alert returns NSAlert's legacy codes: ok = 1, cancel = 0, other = -1.
         deployment_choice = rumps.alert(
             title="Transcription Engine",
             message="Choose deployment type:",
             ok="Cloud (API)",
-            cancel="Local (Whisper)"
+            cancel="Local (Whisper)",
+            other="Local Server (MLX)"
         )
 
-        if deployment_choice == 1:
+        if deployment_choice == -1:
+            self._configure_local_server(settings)
+        elif deployment_choice == 1:
             provider_choice = rumps.alert(
                 title="Cloud Provider",
                 message="Choose cloud transcription provider:",
@@ -342,15 +374,7 @@ class OtisDictationApp(rumps.App):
                 rumps.alert("Settings Saved", "Using Mistral API for transcription")
         else:
             settings.transcription_engine = "whisper"
-
-            lang_choice = rumps.alert(
-                title="Language Settings",
-                message="Choose transcription language for Whisper:",
-                ok="French",
-                cancel="English"
-            )
-
-            settings.language = "fr" if lang_choice == 1 else "en"
+            settings.language = self._ask_language()
 
             model_choice = rumps.alert(
                 title="Whisper Model",
@@ -375,6 +399,44 @@ class OtisDictationApp(rumps.App):
 
             settings.save()
             rumps.alert("Settings Saved", f"Using Whisper ({settings.whisper_model}) for transcription in {settings.language.upper()}")
+
+    @staticmethod
+    def _ask_language():
+        lang_choice = rumps.alert(
+            title="Language Settings",
+            message="Choose transcription language for Whisper:",
+            ok="French",
+            cancel="English"
+        )
+        return "fr" if lang_choice == 1 else "en"
+
+    def _configure_local_server(self, settings):
+        model_choice = rumps.alert(
+            title="Local Server Model",
+            message="Choose the otis-speech-server model:",
+            ok="Voxtral 4-bit (Fast)",
+            cancel="Whisper Turbo",
+            other="Voxtral bf16"
+        )
+        settings.transcription_engine = "local-server"
+        settings.server_model = {
+            1: "voxtral-realtime-4bit",
+            0: "whisper-large-v3-turbo",
+            -1: "voxtral-realtime-bf16",
+        }[model_choice]
+
+        if settings.server_model.startswith("whisper"):
+            settings.language = self._ask_language()
+            language_note = f"in {settings.language.upper()}"
+        else:
+            language_note = "(language auto-detected)"
+
+        settings.save()
+        rumps.alert(
+            "Settings Saved",
+            f"Using local server model {settings.server_model} {language_note} at {settings.server_url}\n\n"
+            "Start the server with: conda activate otis-speech-server; otis-speech-server"
+        )
 
     def reset_settings(self, sender):
         """Reset transcription settings to defaults."""

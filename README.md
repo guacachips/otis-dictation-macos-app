@@ -25,12 +25,14 @@ python app.py
 Menu bar → Microphone: System Default (follows macOS) or a specific input, saved by name.
 
 Menu bar → Transcription Settings:
-- **Deployment**: Cloud (API) or Local (Whisper)
+- **Deployment**: Cloud (API), Local (Whisper) or Local Server (MLX)
 - **Cloud Provider**: Gemini or Mistral
-- **Language**: French/English (Whisper only)
-- **Model**: Tiny/Base/Turbo (Whisper only)
+- **Language**: French/English (Whisper models only; Voxtral detects it)
+- **Model**: Tiny/Base/Turbo (Whisper) or Voxtral 4-bit/Whisper Turbo/Voxtral bf16 (Local Server)
 
 **Note**: Whisper models auto-download on first use to `~/.cache/whisper/`
+
+**Local Server** needs a running `otis-speech-server` (`conda activate otis-speech-server; otis-speech-server`). Address: `server_url` in `~/.otis-dictation-macos-app/transcription.json` (default `http://127.0.0.1:6847`).
 
 ## Debug Mode
 
