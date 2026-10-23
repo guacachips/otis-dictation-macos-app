@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live transcription: text appears in a floating panel while you talk. The panel never takes focus from the app you dictate into, and stays visible after the session until the next recording starts or you close it
 - "Live Transcription" toggle in Transcription Settings, available with Local Server (MLX) + Voxtral 4-bit only (requires otis-speech-server 0.2.0 and otis-scribe-engine 0.5.0); `live_transcription` and `transcription_delay_ms` (default 480) in `transcription.json`, existing settings files load unchanged
 - A live session ends on "Stop Live Transcription" in the menu, after 10 s of silence, or when the server ends it; the final text is saved to history with a notification and is not copied to the clipboard ("Copy Last Transcription" still copies it)
-- "Speech server busy" / "Live transcription could not start" notifications when the server refuses the session (nothing is saved), and "Live transcription interrupted" when it fails mid-session (the partial text is saved to history)
+- "Speech server busy" / "Speech server shutting down" / "Live transcription could not start" notifications when the server refuses the session (nothing is saved), "Live transcription interrupted" when it fails mid-session and "Speech server did not finish" when the final text never arrives (any partial text is saved to history)
 
 ## [0.5.0] - 2026-10-16
 

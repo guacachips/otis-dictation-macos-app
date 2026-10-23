@@ -155,6 +155,8 @@ class LiveTranscriptPanel:
         self.panel.setHidesOnDeactivate_(False)
         # Closing only hides the panel: the next live session shows it again.
         self.panel.setReleasedWhenClosed_(False)
+        # Moving the panel by its title bar must not take keyboard focus; clicking into the text still can (to copy).
+        self.panel.setBecomesKeyOnlyIfNeeded_(True)
 
         scroll_view = NSScrollView.alloc().initWithFrame_(self.panel.contentView().bounds())
         scroll_view.setHasVerticalScroller_(True)
@@ -219,6 +221,7 @@ class OtisDictationApp(rumps.App):
         self.live_mode = False
         self.live_client = None
         self._live_error = None
+        self._quitting = False
         self._live_lock = threading.Lock()
         self._live_text = ""
         self._live_flush_pending = False
@@ -257,6 +260,8 @@ class OtisDictationApp(rumps.App):
 
     def clean_quit(self, sender=None):
         """Clean up resources before quitting."""
+        # Set before cancel(): the live thread must not report the cancel as a failure.
+        self._quitting = True
         if self.live_client:
             self.live_client.cancel()
 
@@ -278,6 +283,8 @@ class OtisDictationApp(rumps.App):
         """Start recording audio with VAD (live transcription when enabled)."""
         self.state = self.STATE_RECORDING
         settings = TranscriptionSettings.load()
+        # The panel of the last live session stays up until the next recording starts.
+        self._hide_live_panel()
         if settings.live_enabled():
             # Set here on the main thread so a Stop click is honored even before the worker thread runs.
             self.live_mode = True
@@ -287,8 +294,6 @@ class OtisDictationApp(rumps.App):
             threading.Thread(target=self._record_live, args=(settings,), daemon=True).start()
             return
 
-        # The panel of the last live session stays up until the next recording starts.
-        self._hide_live_panel()
         self._set_status("🔴", "Stop Recording")
 
         threading.Thread(target=self._record_with_vad, daemon=True).start()
@@ -515,13 +520,19 @@ class OtisDictationApp(rumps.App):
                 self._abort_live(client)
                 return
 
+        if self._quitting:
+            self._cleanup_audio_file(audio_file)
+            return
+
         self.state = self.STATE_TRANSCRIBING
         AppHelper.callAfter(self._set_status, "⏳", "Finalizing...")
         AppHelper.callAfter(self._set_live_panel_title, "Otis — Finalizing…")
         try:
             result = client.finish()
         except (RuntimeError, TimeoutError) as e:
-            self._handle_live_failure(e, settings, audio_duration)
+            # Quit cancels the session: that is not a failure to report.
+            if not self._quitting:
+                self._handle_live_failure(e, settings, audio_duration)
         except Exception as e:
             print(f"❌ Live transcription error: {str(e)}")
             self._send_notification("Transcription Error", str(e)[:100])
@@ -573,8 +584,9 @@ class OtisDictationApp(rumps.App):
     def _handle_live_failure(self, error, settings, audio_duration):
         code = getattr(error, 'code', None)
         partial_text = getattr(error, 'partial_text', "")
+        timed_out = isinstance(error, TimeoutError)
 
-        if code in LIVE_START_ERROR_CODES or not partial_text:
+        if not timed_out and (code in LIVE_START_ERROR_CODES or not partial_text):
             print(f"❌ Live transcription could not start: {error}")
             AppHelper.callAfter(self._hide_live_panel)
             if code == "busy":
@@ -586,10 +598,14 @@ class OtisDictationApp(rumps.App):
             return
 
         print(f"❌ Live transcription interrupted: {error}")
-        self.current_text = partial_text
-        AppHelper.callAfter(self._show_live_result, partial_text, "Otis — Interrupted")
-        self._save_to_history(partial_text, settings, settings.server_model, audio_duration, 0.0, error=str(error))
-        self._send_notification("Live transcription interrupted", self._preview(partial_text))
+        if partial_text:
+            self.current_text = partial_text
+            AppHelper.callAfter(self._show_live_result, partial_text, "Otis — Interrupted")
+            self._save_to_history(partial_text, settings, settings.server_model, audio_duration, 0.0, error=str(error))
+        else:
+            AppHelper.callAfter(self._hide_live_panel)
+        title = "Speech server did not finish" if timed_out else "Live transcription interrupted"
+        self._send_notification(title, self._preview(partial_text) or str(error)[:100])
 
     def _on_live_delta(self, delta, text_so_far):
         """Receiver thread: keep only the latest text and schedule one main-thread update at a time."""
@@ -603,9 +619,6 @@ class OtisDictationApp(rumps.App):
     def _on_live_error(self, error):
         """Receiver thread: the session failed; finish() reports it once the recording has stopped."""
         self._live_error = error
-        client = self.live_client
-        if client and getattr(error, 'code', None) in LIVE_START_ERROR_CODES:
-            client.cancel()
         self._request_live_stop()
 
     def _on_live_final(self, stop_reason):
