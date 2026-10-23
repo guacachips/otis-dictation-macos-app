@@ -9,14 +9,34 @@ import rumps
 import threading
 import subprocess
 import json
+import time
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Optional
+from AppKit import (
+    NSBackingStoreBuffered,
+    NSColor,
+    NSFloatingWindowLevel,
+    NSFont,
+    NSPanel,
+    NSScreen,
+    NSScrollView,
+    NSTextView,
+    NSViewHeightSizable,
+    NSViewWidthSizable,
+    NSWindowStyleMaskClosable,
+    NSWindowStyleMaskNonactivatingPanel,
+    NSWindowStyleMaskResizable,
+    NSWindowStyleMaskTitled,
+    NSWindowStyleMaskUtilityWindow,
+)
+from Foundation import NSMakePoint, NSMakeRect, NSMakeSize
 from PyObjCTools import AppHelper
 from otis_scribe_engine import (
     AudioRecorder,
     AudioDeviceManager,
     DeadInputError,
+    LocalServerLiveTranscriber,
     LocalServerUnavailableError,
     VADConfig,
     get_transcriber
@@ -25,6 +45,12 @@ from dotenv import load_dotenv
 from database import TranscriptionDatabase
 
 load_dotenv()
+
+LIVE_MODEL = "voxtral-realtime-4bit"
+# Server error codes meaning the session never ran: nothing to keep, tell the user why.
+LIVE_START_ERROR_CODES = {"busy", "model_not_found", "model_not_available", "model_not_streamable",
+                          "invalid_request", "shutting_down"}
+SERVER_START_HINT = "Start it with: conda activate otis-speech-server; otis-speech-server"
 
 
 @dataclass
@@ -64,11 +90,20 @@ class TranscriptionSettings:
     language: str = "fr"
     server_url: str = "http://127.0.0.1:6847"
     server_model: str = "voxtral-realtime-4bit"
+    live_transcription: bool = False
+    transcription_delay_ms: int = 480
 
     def __post_init__(self):
         # The bf16 option was dropped from the menu: settings saved with it fall back to the 4-bit model.
         if self.server_model == "voxtral-realtime-bf16":
             self.server_model = "voxtral-realtime-4bit"
+
+    def live_supported(self) -> bool:
+        return self.transcription_engine == "local-server" and self.server_model == LIVE_MODEL
+
+    def live_enabled(self) -> bool:
+        """The toggle is kept across engine changes but only applies to Local Server + Voxtral 4-bit."""
+        return self.live_transcription and self.live_supported()
 
     def effective_language(self) -> Optional[str]:
         """Language actually applied: Voxtral detects it itself, so it only counts for Whisper models."""
@@ -101,6 +136,65 @@ class TranscriptionSettings:
             json.dump(asdict(self), f, indent=2)
 
 
+class LiveTranscriptPanel:
+    """Floating window with the live text (main thread only).
+
+    Non-activating, so the app being dictated into keeps keyboard focus.
+    """
+
+    WIDTH, HEIGHT, MARGIN = 480, 220, 20
+
+    def __init__(self):
+        style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
+                 | NSWindowStyleMaskNonactivatingPanel | NSWindowStyleMaskResizable)
+        self.panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, self.WIDTH, self.HEIGHT), style, NSBackingStoreBuffered, False
+        )
+        self.panel.setLevel_(NSFloatingWindowLevel)
+        self.panel.setFloatingPanel_(True)
+        self.panel.setHidesOnDeactivate_(False)
+        # Closing only hides the panel: the next live session shows it again.
+        self.panel.setReleasedWhenClosed_(False)
+
+        scroll_view = NSScrollView.alloc().initWithFrame_(self.panel.contentView().bounds())
+        scroll_view.setHasVerticalScroller_(True)
+        scroll_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        content_size = scroll_view.contentSize()
+        self.text_view = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, content_size.width, content_size.height))
+        self.text_view.setEditable_(False)
+        self.text_view.setSelectable_(True)
+        self.text_view.setVerticallyResizable_(True)
+        self.text_view.setHorizontallyResizable_(False)
+        self.text_view.setAutoresizingMask_(NSViewWidthSizable)
+        self.text_view.textContainer().setWidthTracksTextView_(True)
+        self.text_view.setTextContainerInset_(NSMakeSize(8, 8))
+        scroll_view.setDocumentView_(self.text_view)
+        self.panel.setContentView_(scroll_view)
+
+        visible = NSScreen.mainScreen().visibleFrame()
+        self.panel.setFrameTopLeftPoint_(NSMakePoint(
+            visible.origin.x + visible.size.width - self.WIDTH - self.MARGIN,
+            visible.origin.y + visible.size.height - self.MARGIN
+        ))
+
+    def show(self, title):
+        self.panel.setTitle_(title)
+        self.panel.orderFrontRegardless()
+
+    def set_title(self, title):
+        self.panel.setTitle_(title)
+
+    def set_text(self, text):
+        self.text_view.setString_(text)
+        # setString_ resets the text attributes; labelColor follows light/dark mode.
+        self.text_view.setFont_(NSFont.systemFontOfSize_(15))
+        self.text_view.setTextColor_(NSColor.labelColor())
+        self.text_view.scrollToEndOfDocument_(None)
+
+    def hide(self):
+        self.panel.orderOut_(None)
+
+
 class OtisDictationApp(rumps.App):
     """Main menu bar application."""
 
@@ -121,6 +215,16 @@ class OtisDictationApp(rumps.App):
         self.recorder = None
         self.db = TranscriptionDatabase()
 
+        self.live_panel = None
+        self.live_mode = False
+        self.live_client = None
+        self._live_error = None
+        self._live_lock = threading.Lock()
+        self._live_text = ""
+        self._live_flush_pending = False
+        self._live_stop = threading.Event()
+        self._live_recording_done = threading.Event()
+
         if self.debug:
             print("🔬 DEBUG MODE ENABLED - Detailed metrics active")
 
@@ -133,6 +237,9 @@ class OtisDictationApp(rumps.App):
 
         self.settings_menu = rumps.MenuItem("Transcription Settings")
         self.settings_menu.add(rumps.MenuItem("Configure...", callback=self.show_settings))
+        self.live_menu_item = rumps.MenuItem("Live Transcription", callback=self.toggle_live_transcription)
+        self.settings_menu.add(self.live_menu_item)
+        self._update_live_menu_item()
         self.settings_menu.add(rumps.MenuItem("Reset to Defaults", callback=self.reset_settings))
 
         self.menu = [
@@ -150,7 +257,8 @@ class OtisDictationApp(rumps.App):
 
     def clean_quit(self, sender=None):
         """Clean up resources before quitting."""
-        import time
+        if self.live_client:
+            self.live_client.cancel()
 
         if self.state == self.STATE_RECORDING and self.recorder:
             print("Stopping recording before quit...")
@@ -167,8 +275,20 @@ class OtisDictationApp(rumps.App):
             self._stop_recording()
 
     def _start_recording(self):
-        """Start recording audio with VAD."""
+        """Start recording audio with VAD (live transcription when enabled)."""
         self.state = self.STATE_RECORDING
+        settings = TranscriptionSettings.load()
+        if settings.live_enabled():
+            # Set here on the main thread so a Stop click is honored even before the worker thread runs.
+            self.live_mode = True
+            self._live_stop.clear()
+            self._live_recording_done.clear()
+            self._set_status("🔴", "Stop Live Transcription")
+            threading.Thread(target=self._record_live, args=(settings,), daemon=True).start()
+            return
+
+        # The panel of the last live session stays up until the next recording starts.
+        self._hide_live_panel()
         self._set_status("🔴", "Stop Recording")
 
         threading.Thread(target=self._record_with_vad, daemon=True).start()
@@ -223,7 +343,10 @@ class OtisDictationApp(rumps.App):
 
     def _stop_recording(self):
         """Manually stop recording (override VAD)."""
-        if self.recorder and self.recorder.is_recording:
+        if self.live_mode:
+            print("\n🛑 Manual stop requested")
+            self._request_live_stop()
+        elif self.recorder and self.recorder.is_recording:
             print("\n🛑 Manual stop requested")
             self.recorder.stop_recording()
 
@@ -260,39 +383,16 @@ class OtisDictationApp(rumps.App):
 
             tokens_total = result.get('tokens', {}).get('total_tokens') if 'tokens' in result else None
 
-            app_settings = AppSettings.load()
-            if app_settings.telemetry_enabled:
-                self.db.save_transcription(
-                    text=self.current_text,
-                    engine=settings.transcription_engine,
-                    model=result.get('model'),
-                    language=settings.effective_language(),
-                    audio_duration=round(audio_duration, 2),
-                    transcription_time=round(transcription_time, 2),
-                    realtime_factor=round(realtime_factor, 2),
-                    tokens_total=tokens_total,
-                    save_telemetry=True
-                )
-                print("💾 Saved to history database (with telemetry)")
-            else:
-                self.db.save_transcription(
-                    text=self.current_text,
-                    save_telemetry=False
-                )
-                print("💾 Saved to history database (telemetry disabled)")
-
-            AppHelper.callAfter(self._update_history_menu)
-
-            preview = self.current_text[:100] + "..." if len(self.current_text) > 100 else self.current_text
-            self._send_notification("Transcription Ready", preview)
+            self._save_to_history(
+                self.current_text, settings, result.get('model'),
+                audio_duration, transcription_time, tokens_total=tokens_total
+            )
+            self._send_notification("Transcription Ready", self._preview(self.current_text))
 
         except LocalServerUnavailableError as e:
             print(f"❌ Transcription error: {str(e)}")
             self.current_text = f"Error: {str(e)}"
-            self._send_notification(
-                "Speech server not running",
-                "Start it with: conda activate otis-speech-server; otis-speech-server"
-            )
+            self._send_notification("Speech server not running", SERVER_START_HINT)
 
         except Exception as e:
             print(f"❌ Transcription error: {str(e)}")
@@ -300,18 +400,258 @@ class OtisDictationApp(rumps.App):
             self._send_notification("Transcription Error", str(e)[:100])
 
         finally:
-            # Clean up temp file unless in debug mode
-            if audio_file and Path(audio_file).exists():
-                if not self.debug:
-                    try:
-                        Path(audio_file).unlink()
-                        print(f"🗑️  Cleaned up temporary audio file")
-                    except Exception as e:
-                        print(f"⚠️  Failed to delete temp file: {e}")
-                else:
-                    print(f"🔍 Debug: Audio file kept at {audio_file}")
-
+            self._cleanup_audio_file(audio_file)
             self._reset_to_idle()
+
+    def _save_to_history(self, text, settings, model, audio_duration, transcription_time, tokens_total=None, error=None):
+        """Save to the history database (callable from a worker thread)."""
+        realtime_factor = transcription_time / audio_duration if audio_duration > 0 else 0
+        if AppSettings.load().telemetry_enabled:
+            self.db.save_transcription(
+                text=text,
+                engine=settings.transcription_engine,
+                model=model,
+                language=settings.effective_language(),
+                audio_duration=round(audio_duration, 2),
+                transcription_time=round(transcription_time, 2),
+                realtime_factor=round(realtime_factor, 2),
+                tokens_total=tokens_total,
+                error=error,
+                save_telemetry=True
+            )
+            print("💾 Saved to history database (with telemetry)")
+        else:
+            self.db.save_transcription(
+                text=text,
+                save_telemetry=False
+            )
+            print("💾 Saved to history database (telemetry disabled)")
+
+        AppHelper.callAfter(self._update_history_menu)
+
+    @staticmethod
+    def _preview(text):
+        return text[:100] + "..." if len(text) > 100 else text
+
+    def _cleanup_audio_file(self, audio_file):
+        """Delete the temp recording unless in debug mode."""
+        if audio_file and Path(audio_file).exists():
+            if not self.debug:
+                try:
+                    Path(audio_file).unlink()
+                    print(f"🗑️  Cleaned up temporary audio file")
+                except Exception as e:
+                    print(f"⚠️  Failed to delete temp file: {e}")
+            else:
+                print(f"🔍 Debug: Audio file kept at {audio_file}")
+
+    def _record_live(self, settings):
+        """Record while streaming to otis-speech-server; text shows in the live panel (runs in background thread)."""
+        client = LocalServerLiveTranscriber(
+            base_url=settings.server_url,
+            model=settings.server_model,
+            transcription_delay_ms=settings.transcription_delay_ms,
+            on_delta=self._on_live_delta,
+            on_error=self._on_live_error,
+            on_final=self._on_live_final,
+            debug=self.debug
+        )
+        self.recorder = None
+        self.live_client = client
+        self._live_error = None
+        with self._live_lock:
+            self._live_text = ""
+
+        try:
+            client.start()
+        except Exception as e:
+            print(f"❌ Live transcription error: {str(e)}")
+            if isinstance(e, LocalServerUnavailableError):
+                self._send_notification("Speech server not running", SERVER_START_HINT)
+            else:
+                self._send_notification("Live transcription could not start", str(e)[:100])
+            self._live_recording_done.set()
+            self._end_live()
+            return
+
+        AppHelper.callAfter(self._show_live_panel)
+        audio_file, audio_duration = None, 0.0
+        try:
+            try:
+                temp_dir = Path.home() / ".otis-dictation-macos-app" / "temp"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                # Live sessions end on menu Stop, after 10 s of silence, or when the server ends them.
+                vad_config = VADConfig(threshold_speech=0.5, silence_duration_max=10.0, min_speech_duration=0.5)
+                self.recorder = AudioRecorder(
+                    output_dir=temp_dir,
+                    device_id=AppSettings.load().input_device_name,
+                    vad_config=vad_config,
+                    on_audio=client.feed
+                )
+                # Stop or a server error can arrive while the VAD model loads, before record() starts.
+                if not self._live_stop.is_set():
+                    audio_file, audio_duration = self.recorder.record()
+            finally:
+                self._live_recording_done.set()
+                menu_data = self._microphone_menu_data(refresh=True)
+                if menu_data:
+                    AppHelper.callAfter(self._apply_microphone_menu, *menu_data)
+
+        # A server error stops the recorder early, so the recording may be empty or all zeros:
+        # the server error is the real cause and finish() reports it below.
+        except DeadInputError as e:
+            print(f"❌ Recording error: {str(e)}")
+            if self._live_error is None:
+                self._abort_live(client)
+                self._send_notification(
+                    "Microphone problem",
+                    f"No signal from '{e.device_name}' (muted?). Pick another microphone in the Otis menu."
+                )
+                return
+
+        except Exception as e:
+            print(f"❌ Recording error: {str(e)}")
+            if self._live_error is None:
+                self._abort_live(client)
+                return
+
+        self.state = self.STATE_TRANSCRIBING
+        AppHelper.callAfter(self._set_status, "⏳", "Finalizing...")
+        AppHelper.callAfter(self._set_live_panel_title, "Otis — Finalizing…")
+        try:
+            result = client.finish()
+        except (RuntimeError, TimeoutError) as e:
+            self._handle_live_failure(e, settings, audio_duration)
+        except Exception as e:
+            print(f"❌ Live transcription error: {str(e)}")
+            self._send_notification("Transcription Error", str(e)[:100])
+            AppHelper.callAfter(self._set_live_panel_title, "Otis — Error")
+        else:
+            self._complete_live(result, settings, audio_duration, client.dropped_seconds)
+        finally:
+            self._cleanup_audio_file(audio_file)
+            self._end_live()
+
+    def _abort_live(self, client):
+        """End a live session that produced nothing worth keeping (recording thread)."""
+        client.cancel()
+        AppHelper.callAfter(self._hide_live_panel)
+        self._end_live()
+
+    def _end_live(self):
+        self.live_mode = False
+        self.live_client = None
+        self._reset_to_idle()
+
+    def _complete_live(self, result, settings, audio_duration, dropped_seconds):
+        self.current_text = result['text']
+        stats = result['stats']
+
+        print("\n" + "="*60)
+        print(f"🔧 Engine:            {settings.transcription_engine} (live)")
+        print(f"📦 Model:             {result['model']}")
+        print(f"🎙️  Audio Duration:    {audio_duration:.2f}s")
+        print(f"⏱️  Finalize Time:     {result['transcription_time']:.2f}s")
+        print(f"🛑 Stop Reason:       {stats.get('stop_reason')}")
+        if dropped_seconds:
+            print(f"⚠️  Dropped Audio:     {dropped_seconds:.2f}s (sender fell behind)")
+        if self.debug:
+            print(f"📊 Server Stats:      {stats}")
+        print(f"\n✅ Transcription: {self.current_text}")
+        print("="*60 + "\n")
+
+        AppHelper.callAfter(self._show_live_result, self.current_text, "Otis — Done")
+        if not self.current_text:
+            self._send_notification("No speech detected", "Nothing was transcribed.")
+            return
+
+        self._save_to_history(
+            self.current_text, settings, result['model'], audio_duration, result['transcription_time']
+        )
+        self._send_notification("Transcription Ready", self._preview(self.current_text))
+
+    def _handle_live_failure(self, error, settings, audio_duration):
+        code = getattr(error, 'code', None)
+        partial_text = getattr(error, 'partial_text', "")
+
+        if code in LIVE_START_ERROR_CODES or not partial_text:
+            print(f"❌ Live transcription could not start: {error}")
+            AppHelper.callAfter(self._hide_live_panel)
+            if code == "busy":
+                self._send_notification("Speech server busy", "Another live transcription is running. Try again when it ends.")
+            elif code == "shutting_down":
+                self._send_notification("Speech server shutting down", SERVER_START_HINT)
+            else:
+                self._send_notification("Live transcription could not start", str(error)[:100])
+            return
+
+        print(f"❌ Live transcription interrupted: {error}")
+        self.current_text = partial_text
+        AppHelper.callAfter(self._show_live_result, partial_text, "Otis — Interrupted")
+        self._save_to_history(partial_text, settings, settings.server_model, audio_duration, 0.0, error=str(error))
+        self._send_notification("Live transcription interrupted", self._preview(partial_text))
+
+    def _on_live_delta(self, delta, text_so_far):
+        """Receiver thread: keep only the latest text and schedule one main-thread update at a time."""
+        with self._live_lock:
+            self._live_text = text_so_far
+            if self._live_flush_pending:
+                return
+            self._live_flush_pending = True
+        AppHelper.callAfter(self._flush_live)
+
+    def _on_live_error(self, error):
+        """Receiver thread: the session failed; finish() reports it once the recording has stopped."""
+        self._live_error = error
+        client = self.live_client
+        if client and getattr(error, 'code', None) in LIVE_START_ERROR_CODES:
+            client.cancel()
+        self._request_live_stop()
+
+    def _on_live_final(self, stop_reason):
+        """Receiver thread: a final the app did not ask for (eos, max_duration) ends the recording."""
+        if stop_reason != "end":
+            print(f"\n🛑 Server ended the live session ({stop_reason})")
+            self._request_live_stop()
+
+    def _request_live_stop(self):
+        self._live_stop.set()
+        threading.Thread(target=self._stop_live_recorder, daemon=True).start()
+
+    def _stop_live_recorder(self):
+        # record() may not have started yet (VAD model loading): wait until it records or was skipped.
+        while not self._live_recording_done.is_set():
+            recorder = self.recorder
+            if recorder is not None and recorder.is_recording:
+                recorder.stop_recording()
+                return
+            time.sleep(0.05)
+
+    def _show_live_panel(self):
+        if self.live_panel is None:
+            self.live_panel = LiveTranscriptPanel()
+        self.live_panel.set_text("")
+        self.live_panel.show("Otis — Listening…")
+
+    def _flush_live(self):
+        with self._live_lock:
+            text = self._live_text
+            self._live_flush_pending = False
+        if self.live_panel:
+            self.live_panel.set_text(text)
+
+    def _show_live_result(self, text, title):
+        if self.live_panel:
+            self.live_panel.set_text(text)
+            self.live_panel.set_title(title)
+
+    def _set_live_panel_title(self, title):
+        if self.live_panel:
+            self.live_panel.set_title(title)
+
+    def _hide_live_panel(self):
+        if self.live_panel:
+            self.live_panel.hide()
 
     def _create_transcriber(self, settings):
         if settings.transcription_engine == "gemini":
@@ -405,6 +745,23 @@ class OtisDictationApp(rumps.App):
             settings.save()
             rumps.alert("Settings Saved", f"Using Whisper ({settings.whisper_model}) for transcription in {settings.language.upper()}")
 
+        self._update_live_menu_item()
+
+    def toggle_live_transcription(self, sender):
+        settings = TranscriptionSettings.load()
+        if settings.live_enabled():
+            settings.live_transcription = False
+        elif settings.live_supported():
+            settings.live_transcription = True
+        else:
+            rumps.alert("Live Transcription", "Live transcription needs Local Server (MLX) → Voxtral 4-bit")
+            return
+        settings.save()
+        self._update_live_menu_item()
+
+    def _update_live_menu_item(self):
+        self.live_menu_item.state = int(TranscriptionSettings.load().live_enabled())
+
     @staticmethod
     def _ask_language():
         lang_choice = rumps.alert(
@@ -451,6 +808,7 @@ class OtisDictationApp(rumps.App):
             config_file = TranscriptionSettings.get_config_path()
             if config_file.exists():
                 config_file.unlink()
+            self._update_live_menu_item()
             rumps.alert("Settings Reset", "Transcription settings reset to defaults:\n• Engine: Whisper (Local)\n• Model: Tiny\n• Language: French")
 
     def show_text_window(self, sender):

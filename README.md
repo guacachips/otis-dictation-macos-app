@@ -29,6 +29,7 @@ Menu bar → Transcription Settings:
 - **Cloud Provider**: Gemini or Mistral
 - **Language**: French/English (Whisper models only; Voxtral detects it)
 - **Model**: Tiny/Base/Turbo (Whisper) or Voxtral 4-bit/Whisper Turbo (Local Server)
+- **Live Transcription** (Local Server + Voxtral 4-bit): text appears in a floating panel while you talk; stops on menu Stop or after 10 s of silence
 
 **Note**: Whisper models auto-download on first use to `~/.cache/whisper/`
 
